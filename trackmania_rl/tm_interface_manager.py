@@ -266,30 +266,36 @@ class TMInterfaceManager:
         time_first_message0 = time.perf_counter_ns()
 
         print("L ", end="")
+        last_action_time=time.time()
         while not (this_rollout_is_finished and time.perf_counter_ns() > do_not_exit_main_loop_before_time):
-            if self.iface.timeout:
-                print("NO SERVER RESPONSE Starting now", flush=True)
+            print(self.interface_name , "before checking timeout", flush=True)
+            if self.iface.timeout or time.time()-last_action_time>3:
+                if self.iface.timeout:
+                    print("NO SERVER RESPONSE RESTARTING NOW", flush=True)
+                else:
+                    print("NO ACTION TAKEN FOR 3s RESTARTING NOW", flush=True)
                 self.iface.set_speed(1)
                 self.iface.set_speed(1)
                 self.iface.timeout=False
                 self.iface.close()
                 time.sleep(misc.timeout_during_run_ms/990)
                 return rollout_results, end_race_stats, False
+            print(self.interface_name , "before ensure connected", flush=True)
             if not self.iface._ensure_connected():
                 time.sleep(0)
                 continue
-
+            
             if self.iface.mfile is None:
                 continue
-
+            print(self.interface_name , "before seeking mfile", flush=True)
             self.iface.mfile.seek(0)
-
+            print(self.interface_name , "before reading message", flush=True)
             msgtype = self.iface._read_int32()
 
             ignore_message0 = (
                 ((msgtype & 0xFF) == 0) and prev_msgtype == 0 and (time.perf_counter_ns() > time_first_message0 + 1000_000_000)
             )
-
+            
             if (msgtype & 0xFF != 14) and (((msgtype & 0xFF00) == 0) or ignore_message0):
                 # No message is ready, or we are spammed with message 0
                 if ((msgtype & 0xFF00) != 0) and ignore_message0:
@@ -313,13 +319,14 @@ class TMInterfaceManager:
                     # print("Compute action")
 
                     if current_zone_idx == len(zone_centers) - 1 - misc.n_zone_centers_in_inputs:
+                        #print(self.interface_name , "entered last virtual zone", flush=True)
                         # This might happen if the car enters my last virtual zone, but has not finished the race yet.
                         # Just press forward and do not record any experience
                         self.iface.set_input_state(**misc.inputs[misc.action_forward_idx])
                         self.iface.set_speed(self.running_speed)
                     else:
                         # ===================================================================================================
-
+                        last_action_time=time.time()
                         pc2 = time.perf_counter_ns()
                         #print(self.interface_name , "before grabbing frame", flush=True)
                         iterations = 0
@@ -586,6 +593,7 @@ class TMInterfaceManager:
                         n_th_action_we_compute += 1
 
                         time_after_iface_set_set += time.perf_counter_ns() - pc2
+                        #print(self.interface_name , "end of race step loop", flush=True)
 
                 continue
             #print(self.interface_name , "before read messages", flush=True)
