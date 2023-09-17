@@ -1,7 +1,7 @@
 import ctypes
 import math
 import time
-
+import importlib
 import cv2
 import numpy as np
 import psutil
@@ -11,17 +11,65 @@ import torch
 import win32gui
 from ReadWriteMemory import ReadWriteMemory
 from tminterface.interface import Message, MessageType, TMInterface
-
+import torch.multiprocessing as mp
 try:
     from . import dxshot as dxcam  # UNCOMMENT HERE TO USE DXSHOT
 except:
     import dxcam
 from . import misc, time_parsing
 from .geometry import fraction_time_spent_in_current_zone
+from tminterface.constants import DEFAULT_SERVER_SIZE
 
-def _get_window_position():
-    monitor_width = ctypes.windll.user32.GetSystemMetrics(0)
-    trackmania_window = win32gui.FindWindow("TmForever", None)
+class TMInterfaceCustom(TMInterface):
+    def __init__(self, server_name='TMInterface0', buffer_size=DEFAULT_SERVER_SIZE):
+        super().__init__(server_name=server_name, buffer_size=buffer_size)
+        self.timeout = False
+    def _wait_for_server_response(self, clear: bool = True, timeout: float = 3):
+        if self.mfile is None:
+            return False
+        time_start=time.time()
+        self.mfile.seek(0)
+        while self._read_int32() != MessageType.S_RESPONSE | 0xFF00:
+            self.mfile.seek(0)
+            time.sleep(0)
+            time_passed=time.time()-time_start
+            if timeout!=None:
+                if time_passed > timeout:
+                    self.timeout = True
+                    return False
+        if clear:
+            self._clear_buffer()
+        return True
+    def set_speed(self, speed: float):
+        """
+        Sets the global game speed, internally this simply sets the console variable
+        "speed" in an TMInterface instance.
+
+        All characteristics of setting the global speed apply. It is not recommended
+        to set the speed to high factors (such as >100), which could cause the game
+        to skip running some subsystems such as the input subsystem.
+
+        This variable does not affect simulation contexts in which debug mode is disabled.
+        When debug mode is disabled (default), the game runs only the simulation subsystem.
+
+        Args:
+            speed (float): the speed to set, 1 is the default normal game speed,
+                        factors <1 will slow down the game while factors >1 will speed it up
+        """
+        msg = Message(MessageType.C_SET_GAME_SPEED)
+        msg.write_double(speed)
+        self._send_message(msg)
+        gotResponse = self._wait_for_server_response(timeout=3)
+        return gotResponse
+
+
+def _get_window_position(Findmatch=False,session=0,trackmania_window=None):
+    monitor_width = ctypes.windll.user32.GetSystemMetrics(0)   
+    if trackmania_window==None:
+        trackmania_window = win32gui.FindWindow("TmForever", None)
+        if Findmatch:
+            for i in range(session):
+                trackmania_window = win32gui.FindWindowEx(0,trackmania_window,"TmForever", None)
     rect = win32gui.GetWindowRect(trackmania_window)
     clientRect = win32gui.GetClientRect(trackmania_window)  # https://stackoverflow.com/questions/51287338/python-2-7-get-ui-title-bar-size
     windowOffset = math.floor(((rect[2] - rect[0]) - clientRect[2]) / 2)
@@ -39,34 +87,37 @@ def _get_window_position():
         output_idx += 1
     right = left + misc.W_screen
     bottom = top + misc.H_screen
-    return (left, top, right, bottom), output_idx
+    return (left, top, right, bottom), output_idx, trackmania_window
 
 
 camera = None
 
 
-def recreate_dxcam():
+def recreate_dxcam(Findmatch=False,session=0,trackmania_window=None):
     global camera
     print("RECREATE")
+    camera=None
     del camera
-    create_dxcam()
+    trackmania_window= create_dxcam(Findmatch,session,trackmania_window)
+    return trackmania_window
 
 
-def create_dxcam():
+def create_dxcam(Findmatch=False,session=0,trackmania_window=None):
     global camera
-    region, output_idx = _get_window_position()
+    region, output_idx, trackmania_window = _get_window_position(Findmatch,session,trackmania_window)
     print(f"CREATE {region=}, {output_idx=}")
     camera = dxcam.create(output_idx=output_idx, output_color="BGRA", region=region, max_buffer_len=1)
+    return trackmania_window
 
 
-def grab_screen():
+def grab_screen(trackmania_window=None):
     global camera
     try:
         return camera.grab()
     except:
         pass
-    recreate_dxcam()
-    return grab_screen()
+    recreate_dxcam(trackmania_window=trackmania_window)
+    return grab_screen(trackmania_window)
 
 
 create_dxcam()
@@ -76,12 +127,15 @@ class TMInterfaceManager:
     def __init__(
         self,
         base_dir,
+        pinned_buffer_Queue,
         running_speed=1,
         run_steps_per_action=10,
         max_overall_duration_ms=2000,
         max_minirace_duration_ms=2000,
         interface_name="TMInterface0",
         zone_centers=None,
+        pinned_buffer_Lock=None,
+        
     ):
         # Create TMInterface we will be using to interact with the game client
         self.iface = None
@@ -96,17 +150,16 @@ class TMInterfaceManager:
         self.interface_name = interface_name
         # self.trackmania_window = win32gui.FindWindow("TmForever", None)
         self.digits_library = time_parsing.DigitsLibrary(base_dir / "data" / "digits_file.npy")
-        remove_fps_cap()
+        #remove_fps_cap()
         self.zone_centers = zone_centers
         self.msgtype_response_to_wakeup_TMI = None
         self.pinned_buffer_size = (
-            misc.memory_size + 100
+            misc.memory_size_per_session + 10000
         )  # We need some margin so we don't invalidate de the next ~n_step transitions when we overwrite images
-        self.pinned_buffer = torch.empty((self.pinned_buffer_size, 1, misc.H_downsized, misc.W_downsized), dtype=torch.uint8)
-        torch.cuda.cudart().cudaHostRegister(
-            self.pinned_buffer.data_ptr(), self.pinned_buffer_size * misc.H_downsized * misc.W_downsized, 0
-        )
+        self.pinned_buffer_Queue = pinned_buffer_Queue
         self.pinned_buffer_index = 0
+        self.pinned_buffer_Lock =pinned_buffer_Lock
+        self.trackmania_window=None
 
     def rewind_to_state(self, state):
         msg = Message(MessageType.C_SIM_REWIND_TO_STATE)
@@ -115,6 +168,7 @@ class TMInterfaceManager:
         self.iface._wait_for_server_response()
 
     def rollout(self, exploration_policy, is_eval):
+        importlib.reload(dxcam)
         end_race_stats = {}
         zone_centers_delta = (np.random.rand(*self.zone_centers.shape) - 0.5) * misc.zone_centers_jitter
         zone_centers_delta[:, 1] *= 0.1  # Don't change the elevation
@@ -161,7 +215,7 @@ class TMInterfaceManager:
         if self.iface is None:
             assert self.msgtype_response_to_wakeup_TMI is None
             print("Initialize connection to TMInterface ", end="")
-            self.iface = TMInterface(self.interface_name)
+            self.iface = TMInterfaceCustom(self.interface_name)
             self.iface.registered = False
 
             while not self.iface._ensure_connected():
@@ -213,6 +267,14 @@ class TMInterfaceManager:
 
         print("L ", end="")
         while not (this_rollout_is_finished and time.perf_counter_ns() > do_not_exit_main_loop_before_time):
+            if self.iface.timeout:
+                print("NO SERVER RESPONSE Starting now", flush=True)
+                self.iface.set_speed(1)
+                self.iface.set_speed(1)
+                self.iface.timeout=False
+                self.iface.close()
+                time.sleep(misc.timeout_during_run_ms/990)
+                return rollout_results, end_race_stats, False
             if not self.iface._ensure_connected():
                 time.sleep(0)
                 continue
@@ -259,12 +321,12 @@ class TMInterfaceManager:
                         # ===================================================================================================
 
                         pc2 = time.perf_counter_ns()
-
+                        #print(self.interface_name , "before grabbing frame", flush=True)
                         iterations = 0
                         frame = None
                         while frame is None:
                             # frame = self.camera.grab(region=trackmania_window_region)#,frame_timeout=2000)
-                            frame = grab_screen()
+                            frame = grab_screen(self.trackmania_window)
                         parsed_time = time_parsing.parse_time(frame, self.digits_library)
 
                         time_to_grab_frame += time.perf_counter_ns() - pc2
@@ -298,6 +360,7 @@ class TMInterfaceManager:
                                 last_known_simulation_state.simulation_wheels[3].real_time_state.is_sliding,
                                 # Bool
                                 last_known_simulation_state.scene_mobil.gearbox_state,  # Bool
+                                last_known_simulation_state.scene_mobil.has_any_lateral_contact,
                                 last_known_simulation_state.scene_mobil.engine.gear,  # 0 -> 5 approx
                                 last_known_simulation_state.scene_mobil.engine.actual_rpm
                                 # 0-10000 aoorox
@@ -359,18 +422,33 @@ class TMInterfaceManager:
 
                         time_between_grab_frame += time.perf_counter_ns() - pc2
                         pc2 = time.perf_counter_ns()
-
+                        #print(self.interface_name , "before checking simstate time", flush=True)
+                        session=0
                         while parsed_time != sim_state_race_time:
                             frame = None
                             iterations += 1
                             while frame is None:
                                 # frame = self.camera.grab(region=trackmania_window_region)#, frame_timeout=2000)
-                                frame = grab_screen()
+                                frame = grab_screen(self.trackmania_window)
                             parsed_time = time_parsing.parse_time(frame, self.digits_library)
+                            
+                            if iterations > 10 and iterations%4==0:
+                                print("trying to match session", session,flush=True)
+                                self.trackmania_window=recreate_dxcam(Findmatch=True,session=session,trackmania_window=None)
+                                session=(session+1)%misc.num_sessions
+                            if iterations > 10+misc.num_sessions*16:                                
+                                print(f"warning capturing {iterations=}, {parsed_time=}, {sim_state_race_time=}",flush=True)
+                                #recreate_dxcam(self.trackmania_window)
+                                self.iface.set_speed(1)
+                                self.iface.set_speed(1)
+                                self.iface.timeout=False
+                                self.iface.close()
+                                time.sleep(misc.timeout_during_run_ms/990)
+                                return rollout_results, end_race_stats, False
+                            #if iterations > 100:
+                            #    print("warning capturing iterations could not be resolved ABANDONING RUN!!!",flush=True)
+                                
 
-                            if iterations > 10:
-                                print(f"warning capturing {iterations=}, {parsed_time=}, {sim_state_race_time=}")
-                                recreate_dxcam()
 
                         time_to_grab_frame += time.perf_counter_ns() - pc2
                         pc2 = time.perf_counter_ns()
@@ -385,19 +463,24 @@ class TMInterfaceManager:
                                 0,
                             )
                         )
-                        self.pinned_buffer[self.pinned_buffer_index].copy_(frame)
-                        frame = self.pinned_buffer[self.pinned_buffer_index]
+                        #if (self.pinned_buffer_Lock!=None):
+                        #print(self.interface_name , "before pushing frame to pinned buffer", flush=True)
+                        with self.pinned_buffer_Lock:
+                            self.pinned_buffer_Queue.put([self.pinned_buffer_index+misc.memory_size_per_session*(int(self.interface_name[-1])-misc.lowest_tm_interface),frame])
+                        #frame = self.pinned_buffer[self.pinned_buffer_index]
+                        #
+                        rollout_results["frames"].append(self.pinned_buffer_index+misc.memory_size_per_session*(int(self.interface_name[-1])-misc.lowest_tm_interface))
                         self.pinned_buffer_index += 1
                         if self.pinned_buffer_index >= self.pinned_buffer_size:
                             self.pinned_buffer_index = 0
 
-                        rollout_results["frames"].append(frame)
+                        #print(self.interface_name , "before constructing features", flush=True)
 
                         time_A_rgb2gray += time.perf_counter_ns() - pc2
                         pc2 = time.perf_counter_ns()
 
                         prev_sim_state_position = sim_state_position
-
+                        
                         # ==== Construct features
                         state_zone_center_coordinates_in_car_reference_system = sim_state_orientation.T.dot(
                             (
@@ -438,14 +521,22 @@ class TMInterfaceManager:
 
                         time_A_stack += time.perf_counter_ns() - pc2
                         pc2 = time.perf_counter_ns()
-
-                        (
-                            action_idx,
-                            action_was_greedy,
-                            q_value,
-                            q_values,
-                        ) = exploration_policy(rollout_results["frames"][-1], floats)
-
+                        #print(self.interface_name , "before ExplorationPolicy", flush=True)
+                        try:
+                            (
+                                action_idx,
+                                action_was_greedy,
+                                q_value,
+                                q_values,
+                            ) = exploration_policy(frame, floats)
+                        except Exception as e:
+                            print(self.interface_name , "EXPLORATION POLICY FAILED!!!!!!!", flush=True)
+                            print(e)
+                            action_idx = 0
+                            action_was_greedy = False
+                            q_value = 0
+                            q_values = np.zeros(len(misc.inputs))
+                        #print(self.interface_name , "After ExplorationPolicy", flush=True)
                         time_exploration_policy += time.perf_counter_ns() - pc2
                         pc2 = time.perf_counter_ns()
 
@@ -458,10 +549,19 @@ class TMInterfaceManager:
                         # action_idx = random.randint(0, 8)
 
                         # print("ACTION ", action_idx, " ", simulation_state.scene_mobil.input_gas)
-
+                        #print(self.interface_name , "Before setting Speed", flush=True)
                         self.iface.set_input_state(**misc.inputs[action_idx])
-                        self.iface.set_speed(self.running_speed)
+                        while not self.iface.set_speed(self.running_speed):
+                            print("NO SERVER RESPONSE Abandoning run", flush=True)
+                            self.iface.set_speed(1)
+                            self.iface.set_speed(1)
+                            self.iface.timeout=False
+                            self.iface.close()
+                            time.sleep(misc.timeout_during_run_ms/990)
+                            return rollout_results, end_race_stats, False
 
+                            
+                        #print(self.interface_name , "After setting Speed", flush=True)
                         time_to_iface_set_set += time.perf_counter_ns() - pc2
                         pc2 = time.perf_counter_ns()
 
@@ -471,7 +571,7 @@ class TMInterfaceManager:
                                 end_race_stats[f"q_value_{i}_starting_frame"] = val
                         rollout_results["meters_advanced_along_centerline"].append(prev_zones_cumulative_distance + meters_in_current_zone)
                         rollout_results["display_speed"].append(sim_state_display_speed)
-                        rollout_results["input_w"].append(misc.inputs[action_idx]["accelerate"])
+                        rollout_results["input_w"].append(misc.inputs[action_idx]["accelerate"] and not misc.inputs[action_idx]["brake"])
                         rollout_results["actions"].append(action_idx)
                         rollout_results["action_was_greedy"].append(action_was_greedy)
                         rollout_results["car_position"].append(sim_state_position)
@@ -488,7 +588,7 @@ class TMInterfaceManager:
                         time_after_iface_set_set += time.perf_counter_ns() - pc2
 
                 continue
-
+            #print(self.interface_name , "before read messages", flush=True)
             msgtype &= 0xFF
             self.iface._skip(4)
             # =============================================
@@ -531,7 +631,7 @@ class TMInterfaceManager:
                 ):
                     # FAILED TO FINISH IN TIME
                     simulation_state = self.iface.get_simulation_state()
-                    print(f"      --- {simulation_state.race_time:>6} ", end="")
+                    print(f"      --- {simulation_state.race_time:>6} ", end="",flush=True)
 
                     end_race_stats["race_finished"] = False
                     end_race_stats["race_time"] = misc.cutoff_rollout_if_race_not_finished_within_duration_ms
@@ -607,7 +707,7 @@ class TMInterfaceManager:
                 self.iface._read_int32()
                 self.iface._respond_to_call(msgtype)
             elif msgtype == MessageType.S_ON_CHECKPOINT_COUNT_CHANGED:
-                print("CP ", end="")
+                print("CP ", end="",flush=True)
                 current = self.iface._read_int32()
                 target = self.iface._read_int32()
                 cpcount += 1
@@ -617,7 +717,7 @@ class TMInterfaceManager:
 
                 print(
                     f"CTNF=({current}, {target}, {this_rollout_has_seen_t_negative}, {this_rollout_is_finished})",
-                    end="",
+                    end="",flush=True
                 )
                 if current == target:  # Finished the race !!
                     simulation_state = self.iface.get_simulation_state()
@@ -661,7 +761,7 @@ class TMInterfaceManager:
                         # self.iface.set_speed(0)
                         # self.latest_tm_engine_speed_requested = 0
                         do_not_exit_main_loop_before_time = time.perf_counter_ns() + 150_000_000
-                        print(f"+++    {simulation_state.race_time:>6} ", end="")
+                        print(f"+++    {simulation_state.race_time:>6} ", end="",flush=True)
 
                         if rollout_results["current_zone_idx"][-1] != len(zone_centers) - 1 - misc.n_zone_centers_in_inputs:
                             # We have not captured a frame where the car has entered our final virtual zone
@@ -724,7 +824,7 @@ class TMInterfaceManager:
                 print("msg_on_bruteforce_evaluate")
                 self.iface._on_bruteforce_validate_call(msgtype)
             elif msgtype == MessageType.S_ON_REGISTERED:
-                print("REGISTERED ", end="")
+                print("REGISTERED ", end="", flush=True)
                 self.iface.registered = True
                 self.iface.execute_command(f"set countdown_speed {self.running_speed}")
                 self.iface.execute_command(f"set autologin {'pb4608' if misc.is_pb_desktop else 'agade09'}")
@@ -741,22 +841,33 @@ class TMInterfaceManager:
             elif msgtype == 0:
                 if prev_msgtype != 0:
                     time_first_message0 = time.perf_counter_ns()
+            elif self.iface.timeout:
+                print("NO SERVER RESPONSE reading messages Starting now", flush=True)
+                self.iface.set_speed(1)
+                self.iface.set_speed(1)
+                self.iface.timeout=False
+                self.iface.close()
+                time.sleep(misc.timeout_during_run_ms/990)
+                return rollout_results, end_race_stats, False
             else:
+                
                 pass
 
             prev_msgtype = msgtype
             time.sleep(0)
 
         print("E", end="")
-        return rollout_results, end_race_stats
+        return rollout_results, end_race_stats, True
 
 
 def remove_fps_cap():
     # from @Kim on TrackMania Tool Assisted Discord server
     process = filter(lambda pr: pr.name() == "TmForever.exe", psutil.process_iter())
     rwm = ReadWriteMemory()
+
     for p in process:
         pid = int(p.pid)
+        print(pid)
         process = rwm.get_process_by_id(pid)
         process.open()
         process.write(0x005292F1, 4294919657)

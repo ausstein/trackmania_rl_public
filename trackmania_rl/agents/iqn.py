@@ -9,7 +9,7 @@ from trackmania_rl.experience_replay.basic_experience_replay import ReplayBuffer
 
 from .. import misc  # TODO virer cet import
 from .. import nn_utilities
-
+from .. import buffer_management
 
 class Agent(torch.nn.Module):
     def __init__(
@@ -115,6 +115,68 @@ class Agent(torch.nn.Module):
 
 
 # ==========================================================================================================================
+class ExplorationTrainer:
+    _slots__ = (
+        "model",
+        "iqn_k",
+        "epsilon",
+        "epsilon_boltzmann",
+        "tau_epsilon_boltzmann",
+        "tau_greedy_boltzmann",
+        "execution_stream",
+    )
+
+    def __init__(
+        self,
+        model: Agent,
+        iqn_k: int,       
+        epsilon: float,
+        epsilon_boltzmann: float,
+        tau_epsilon_boltzmann: float,
+        tau_greedy_boltzmann: float,
+    ):
+        self.model = model     
+        self.iqn_k = iqn_k
+        self.epsilon = epsilon
+        self.epsilon_boltzmann = epsilon_boltzmann
+        self.tau_epsilon_boltzmann = tau_epsilon_boltzmann
+        self.tau_greedy_boltzmann = tau_greedy_boltzmann
+        self.execution_stream = torch.cuda.Stream()
+   
+
+    def get_exploration_action(self, img_inputs, float_inputs):
+        with torch.cuda.stream(self.execution_stream):
+            with torch.no_grad():
+                state_img_tensor = img_inputs.unsqueeze(0).to("cuda", memory_format=torch.channels_last, non_blocking=True)
+                state_float_tensor = torch.as_tensor(np.expand_dims(float_inputs, axis=0)).to("cuda", non_blocking=True)
+                q_values = (
+                    self.model(state_img_tensor, state_float_tensor, self.iqn_k, tau=None, use_fp32=True)[0]
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32)
+                    .mean(axis=0)
+                )
+        r = random.random()
+
+        if r < self.epsilon:
+            # Choose a random action
+            get_argmax_on = np.random.randn(*q_values.shape)
+        elif r < self.epsilon + self.epsilon_boltzmann:
+            get_argmax_on = q_values + self.tau_epsilon_boltzmann * np.random.randn(*q_values.shape) 
+        else:
+            get_argmax_on = q_values + ((self.epsilon + self.epsilon_boltzmann) > 0)  * self.tau_greedy_boltzmann * np.random.randn(
+                *q_values.shape
+            )
+
+        action_chosen_idx = np.argmax(get_argmax_on)
+        greedy_action_idx = np.argmax(q_values)
+
+        return (
+            action_chosen_idx,
+            action_chosen_idx == greedy_action_idx,
+            np.max(q_values),
+            q_values,
+        )
 
 
 class Trainer:
@@ -169,7 +231,7 @@ class Trainer:
         self.tau_greedy_boltzmann = tau_greedy_boltzmann
         self.execution_stream = torch.cuda.Stream()
 
-    def train_on_batch(self, buffer: ReplayBuffer, do_learn: bool):
+    def train_on_batch(self, pinned_buffer :buffer_management.Pinned_buffer_async, buffer: ReplayBuffer, do_learn: bool):
         self.optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
@@ -350,9 +412,9 @@ class Trainer:
             # Choose a random action
             get_argmax_on = np.random.randn(*q_values.shape)
         elif r < self.epsilon + self.epsilon_boltzmann:
-            get_argmax_on = q_values + self.tau_epsilon_boltzmann * np.random.randn(*q_values.shape)
+            get_argmax_on = q_values + self.tau_epsilon_boltzmann * np.random.randn(*q_values.shape) 
         else:
-            get_argmax_on = q_values + ((self.epsilon + self.epsilon_boltzmann) > 0) * self.tau_greedy_boltzmann * np.random.randn(
+            get_argmax_on = q_values + ((self.epsilon + self.epsilon_boltzmann) > 0)  * self.tau_greedy_boltzmann * np.random.randn(
                 *q_values.shape
             )
 

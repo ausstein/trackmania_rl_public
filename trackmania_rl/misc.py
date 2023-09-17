@@ -10,58 +10,93 @@ W_downsized = 160
 H_downsized = 120
 
 wind32gui_margins = {"left": 7, "top": 32, "right": 7, "bottom": 7}
-
-running_speed = 2
+lowest_tm_interface=0   ## Is your sessions are TMInterface0 TMInterface1 and TMInterface2 this would be 0. Right now they have to be consecutive else the script breaks
+num_sessions=3  ## Number of Sessions. Right now you have to start them manually beforehand, because I still need to figure out how to get the correct window hwid when starting from code # also max is 4! using more is not possible with the current code since windows allows a maximum of 4 screen duplications
+sleep_time_between_training=5 ## Training is now done constantly instead until the same memories have been used x times. this is how long to wait between trainings. While training the speed of the sessions tends to go down so I have this at some lower value
+batches_per_training=16 ## Number of batches done when training
+running_speed = 100 
 tm_engine_step_per_action = 5
 ms_per_tm_engine_step = 10
 ms_per_action = ms_per_tm_engine_step * tm_engine_step_per_action
 n_zone_centers_in_inputs = 40
 cutoff_rollout_if_race_not_finished_within_duration_ms = 300_000
-cutoff_rollout_if_no_vcp_passed_within_duration_ms = 300_000
+cutoff_rollout_if_no_vcp_passed_within_duration_ms = 50_000
 
 temporal_mini_race_duration_ms = 2000
 temporal_mini_race_duration_actions = temporal_mini_race_duration_ms / ms_per_action
 # If mini_race_time == mini_race_duration this is the end of the minirace
+use_eval_runs_in_buffer=True  ##made this optional
+use_random_exponential_epsilon =True  ##draw the epsilons from random exponential variables with epsilon mean instead of using the same epsilons every time
+tm_engine_step_per_action_eval =5 ##not implemented but want to in the future
+if not tm_engine_step_per_action_eval==tm_engine_step_per_action:
+    use_eval_runs_in_buffer=False
 
-epsilon = 0.1
+#if np.random.rand()<0.3: ##was my solution to varying epsilon before doing the exponential random variable solution
+#    epsilon = 0.3
+#    epsilon_boltzmann = 0.3
+#else:
+epsilon = 0.01
 epsilon_boltzmann = 0.1
-tau_epsilon_boltzmann = 0.15
-tau_greedy_boltzmann = 0.1
-discard_non_greedy_actions_in_nsteps = False
-buffer_test_ratio = 0.5
+#print(epsilon)
 
-n_steps = 1
+discard_non_greedy_actions_in_nsteps = True
+buffer_test_ratio = 0.02
+write_worker_prints_to_file = True #if true the main console only shows prints from main process
+
+
+n_steps = 5
 constant_reward_per_ms = -1
-reward_per_m_advanced_along_centerline = 1
+reward_per_m_advanced_along_centerline = 100
 
-gamma = 0.85
-reward_per_ms_press_forward = 0.5
-float_input_dim = 21 + 3 * n_zone_centers_in_inputs
-float_hidden_dim = 256
+gamma = 0.99
+reward_per_ms_press_forward = 0
+float_input_dim = 22 + 3 * n_zone_centers_in_inputs ## added has_lateral_contact to the float inputs
+float_hidden_dim = 1024
 conv_head_output_dim = 5632
-dense_hidden_dimension = 64
+dense_hidden_dimension = 1024
 iqn_embedding_dimension = 64
 iqn_n = 8
 iqn_k = 32
 iqn_kappa = 1
 AL_alpha = 0
 
-memory_size = 750_000 if is_pb_desktop else 750_000
-memory_size_start_learn = 10_000
-number_times_single_memory_is_used_before_discard = 8
-offset_cumul_number_single_memories_used = memory_size_start_learn * number_times_single_memory_is_used_before_discard
+
+
+tau_epsilon_boltzmann = 0.1  # These now get multiplied by the expected q value difference which is calculated below. While the expected q value difference is  not perfect, it allows to modify the reward and gamma without having to find a good tau again. 
+tau_greedy_boltzmann = 0.01
+
+expected_speed_difference_good_action_bad_action=5 #in km/h (~average over speed difference during the next (-1/log(gamma)*ms_per_action) milliseconds for one bad action followed by good actions)
+expected_percentage_press_forward_good_action=0.9
+expected_percentage_press_forward_bad_action=1-expected_percentage_press_forward_good_action
+expected_percentage_press_forward_difference=expected_percentage_press_forward_good_action-expected_percentage_press_forward_bad_action #this will get added after the geometric series, as it only applies to the first frame. We ignore that making a bad or good action might effecgt the probability that press forward is best on the next frames.
+
+expected_average_reward_per_ms_good_action_difference_good_action_bad_action=expected_speed_difference_good_action_bad_action/3600*reward_per_m_advanced_along_centerline #expected_speed/3600 conversion from km/h to m/ms
+expected_average_reward_per_frame_difference_good_action_bad_action=ms_per_action*expected_average_reward_per_ms_good_action_difference_good_action_bad_action
+expected_Q_value_difference_good_action_bad_action=expected_average_reward_per_frame_difference_good_action_bad_action*1/(1-gamma)+reward_per_ms_press_forward*expected_percentage_press_forward_good_action #geometric series
+
+
+
+
+tau_epsilon_boltzmann *= expected_Q_value_difference_good_action_bad_action
+tau_greedy_boltzmann *= expected_Q_value_difference_good_action_bad_action
+memory_size = 1_000_000 #750_000 if is_pb_desktop else 750_000
+memory_size_per_session = memory_size//num_sessions
+memory_size_start_learn = 200_000
+#number_times_single_memory_is_used_before_discard = 16*8
+#offset_cumul_number_single_memories_used = memory_size_start_learn * number_times_single_memory_is_used_before_discard
 # Sign and effet of offset_cumul_number_single_memories_used:
 # Positive : We need to generate more memories before we start learning.
 # Negative : The first memories we generate will be used for more batches.
-number_memories_generated_high_exploration_early_training = 100_000
-high_exploration_ratio = 3
-batch_size = 4096
-learning_rate = 1e-2
-weight_decay = 1e-3
+number_memories_generated_high_exploration_early_training = 200_000
+high_exploration_ratio = 5
+batch_size = 2048*1
+print(batch_size)
+learning_rate = 1e-4
+weight_decay = 1e-5
 
-number_memories_trained_on_between_target_network_updates = 10000
+number_memories_trained_on_between_target_network_updates = 10000*1
 
-soft_update_tau = 0.0015
+soft_update_tau = 0.01*1
 
 float_inputs_mean = np.array(
     [
@@ -75,6 +110,7 @@ float_inputs_mean = np.array(
         0.1,
         0.1,
         0.1,
+        0.3,
         0.3,
         2.5,
         7000,  # Car gear and wheels
@@ -277,6 +313,7 @@ float_inputs_std = np.array(
         0.5,
         1,
         2,
+        0.3,
         3000,  # Car gear and wheels
         0.5,
         1,
@@ -546,7 +583,7 @@ distance_between_checkpoints = 10
 road_width = 40  ## a little bit of margin, could be closer to 24 probably ? Don't take risk there are curvy roads
 max_allowable_distance_to_checkpoint = np.sqrt((distance_between_checkpoints / 2) ** 2 + (road_width / 2) ** 2)
 
-zone_centers_jitter = 0.0  # TODO : eval with zero jitter on zone centers !!
+zone_centers_jitter = 0  # TODO : eval with zero jitter on zone centers !!
 good_time_save_all_ms = 0
 
 timeout_during_run_ms = 2_100
