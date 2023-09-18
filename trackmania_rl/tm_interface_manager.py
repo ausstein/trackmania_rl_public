@@ -231,7 +231,14 @@ class TMInterfaceManager:
         else:
             assert self.msgtype_response_to_wakeup_TMI is not None
 
-            self.iface.set_speed(self.running_speed)
+            while not self.iface.set_speed(self.running_speed):
+                print("NO SERVER RESPONSE Abandoning run", flush=True)
+                self.iface.set_speed(1)
+                self.iface.set_speed(1)
+                self.iface.timeout=False
+                self.iface.close()
+                time.sleep(misc.timeout_during_run_ms/990)
+                return rollout_results, end_race_stats, False
             self.latest_tm_engine_speed_requested = self.running_speed
             self.iface._respond_to_call(self.msgtype_response_to_wakeup_TMI)
             self.msgtype_response_to_wakeup_TMI = None
@@ -268,28 +275,51 @@ class TMInterfaceManager:
         print("L ", end="")
         last_action_time=time.time()
         while not (this_rollout_is_finished and time.perf_counter_ns() > do_not_exit_main_loop_before_time):
-            print(self.interface_name , "before checking timeout", flush=True)
+            #print(self.interface_name , "before checking timeout", flush=True)
             if self.iface.timeout or time.time()-last_action_time>3:
                 if self.iface.timeout:
                     print("NO SERVER RESPONSE RESTARTING NOW", flush=True)
                 else:
                     print("NO ACTION TAKEN FOR 3s RESTARTING NOW", flush=True)
+                    if not self.iface._ensure_connected():
+                        time.sleep(0)
+                        continue
+                    
+                    if self.iface.mfile is None:
+                        continue
+                    #print(self.interface_name , "before seeking mfile", flush=True)
+                    self.iface.mfile.seek(0)
+                    #print(self.interface_name , "before reading message", flush=True)
+                    msgtype = self.iface._read_int32()
+
+                    ignore_message0 = (
+                        ((msgtype & 0xFF) == 0) and prev_msgtype == 0 and (time.perf_counter_ns() > time_first_message0 + 1000_000_000)
+                    )
+                    print("Message type", msgtype)
+                    print("ignore_message0", ignore_message0)
+                    print("msgtype & 0xFF != 14" ,msgtype & 0xFF != 14)
+                    print("(msgtype & 0xFF00) == 0",(msgtype & 0xFF00) == 0)
+                    print("compute_action_asap",compute_action_asap)
+                    print("give_up_signal_has_been_sent",give_up_signal_has_been_sent)
+                    print("this_rollout_has_seen_t_negative",this_rollout_has_seen_t_negative)
+                    print("this_rollout_is_finished",this_rollout_is_finished)
+                    print("time.perf_counter_ns() > do_not_compute_action_before_time",time.perf_counter_ns() > do_not_compute_action_before_time)
                 self.iface.set_speed(1)
                 self.iface.set_speed(1)
                 self.iface.timeout=False
                 self.iface.close()
                 time.sleep(misc.timeout_during_run_ms/990)
                 return rollout_results, end_race_stats, False
-            print(self.interface_name , "before ensure connected", flush=True)
+            #print(self.interface_name , "before ensure connected", flush=True)
             if not self.iface._ensure_connected():
                 time.sleep(0)
                 continue
             
             if self.iface.mfile is None:
                 continue
-            print(self.interface_name , "before seeking mfile", flush=True)
+            #print(self.interface_name , "before seeking mfile", flush=True)
             self.iface.mfile.seek(0)
-            print(self.interface_name , "before reading message", flush=True)
+            #print(self.interface_name , "before reading message", flush=True)
             msgtype = self.iface._read_int32()
 
             ignore_message0 = (
