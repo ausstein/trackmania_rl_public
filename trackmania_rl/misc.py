@@ -11,9 +11,9 @@ H_downsized = 120
 
 wind32gui_margins = {"left": 7, "top": 32, "right": 7, "bottom": 7}
 lowest_tm_interface=0   ## Is your sessions are TMInterface0 TMInterface1 and TMInterface2 this would be 0. Right now they have to be consecutive else the script breaks
-num_sessions=3  ## Number of Sessions. Right now you have to start them manually beforehand, because I still need to figure out how to get the correct window hwid when starting from code # also max is 4! using more is not possible with the current code since windows allows a maximum of 4 screen duplications
+num_sessions=2  ## Number of Sessions. Right now you have to start them manually beforehand, because I still need to figure out how to get the correct window hwid when starting from code # also max is 4! using more is not possible with the current code since windows allows a maximum of 4 screen duplications
 sleep_time_between_training=5 ## Training is now done constantly instead until the same memories have been used x times. this is how long to wait between trainings. While training the speed of the sessions tends to go down so I have this at some lower value
-batches_per_training=16 ## Number of batches done when training
+batches_per_training=64 ## Number of batches done when training
 running_speed = 100 
 tm_engine_step_per_action = 5
 ms_per_tm_engine_step = 10
@@ -45,10 +45,10 @@ write_worker_prints_to_file = True #if true the main console only shows prints f
 
 
 n_steps = 5
-constant_reward_per_ms = -1
-reward_per_m_advanced_along_centerline = 100
+constant_reward_per_ms = -0.01
+reward_per_m_advanced_along_centerline = 1
 
-gamma = 0.99
+gamma = 1
 reward_per_ms_press_forward = 0
 float_input_dim = 22 + 3 * n_zone_centers_in_inputs ## added has_lateral_contact to the float inputs
 float_hidden_dim = 1024
@@ -62,26 +62,30 @@ AL_alpha = 0
 
 
 
-tau_epsilon_boltzmann = 0.1  # These now get multiplied by the expected q value difference which is calculated below. While the expected q value difference is  not perfect, it allows to modify the reward and gamma without having to find a good tau again. 
-tau_greedy_boltzmann = 0.01
+tau_epsilon_boltzmann = 0.01  # These now get multiplied by the expected q value difference which is calculated below. While the expected q value difference is  not perfect, it allows to modify the reward and gamma without having to find a good tau again. 
+tau_greedy_boltzmann = 0.0001
 
-expected_speed_difference_good_action_bad_action=5 #in km/h (~average over speed difference during the next (-1/log(gamma)*ms_per_action) milliseconds for one bad action followed by good actions)
-expected_percentage_press_forward_good_action=0.9
-expected_percentage_press_forward_bad_action=1-expected_percentage_press_forward_good_action
-expected_percentage_press_forward_difference=expected_percentage_press_forward_good_action-expected_percentage_press_forward_bad_action #this will get added after the geometric series, as it only applies to the first frame. We ignore that making a bad or good action might effecgt the probability that press forward is best on the next frames.
 
-expected_average_reward_per_ms_good_action_difference_good_action_bad_action=expected_speed_difference_good_action_bad_action/3600*reward_per_m_advanced_along_centerline #expected_speed/3600 conversion from km/h to m/ms
-expected_average_reward_per_frame_difference_good_action_bad_action=ms_per_action*expected_average_reward_per_ms_good_action_difference_good_action_bad_action
-expected_Q_value_difference_good_action_bad_action=expected_average_reward_per_frame_difference_good_action_bad_action*1/(1-gamma)+reward_per_ms_press_forward*expected_percentage_press_forward_good_action #geometric series
-
+if gamma<1:
+    expected_speed_difference_good_action_bad_action=5 #in km/h (~average over speed difference during the next (-1/log(gamma)*ms_per_action) milliseconds for one bad action followed by good actions)
+    expected_percentage_press_forward_good_action=0.9
+    expected_percentage_press_forward_bad_action=1-expected_percentage_press_forward_good_action
+    expected_percentage_press_forward_difference=expected_percentage_press_forward_good_action-expected_percentage_press_forward_bad_action #this will get added after the geometric series, as it only applies to the first frame. We ignore that making a bad or good action might effecgt the probability that press forward is best on the next frames.
+    
+    expected_average_reward_per_ms_good_action_difference_good_action_bad_action=expected_speed_difference_good_action_bad_action/3600*reward_per_m_advanced_along_centerline #expected_speed/3600 conversion from km/h to m/ms
+    expected_average_reward_per_frame_difference_good_action_bad_action=ms_per_action*expected_average_reward_per_ms_good_action_difference_good_action_bad_action
+    expected_Q_value_difference_good_action_bad_action=expected_average_reward_per_frame_difference_good_action_bad_action*1/(1-gamma)+reward_per_ms_press_forward*expected_percentage_press_forward_good_action #geometric series
+else:
+    excpected_finishing_difference_good_action_bad_action_ms=100
+    expected_Q_value_difference_good_action_bad_action=-constant_reward_per_ms*excpected_finishing_difference_good_action_bad_action_ms
 
 
 
 tau_epsilon_boltzmann *= expected_Q_value_difference_good_action_bad_action
 tau_greedy_boltzmann *= expected_Q_value_difference_good_action_bad_action
-memory_size = 1_000_000 #750_000 if is_pb_desktop else 750_000
+memory_size = 300_000 #750_000 if is_pb_desktop else 750_000
 memory_size_per_session = memory_size//num_sessions
-memory_size_start_learn = 200_000
+memory_size_start_learn = 100_000
 #number_times_single_memory_is_used_before_discard = 16*8
 #offset_cumul_number_single_memories_used = memory_size_start_learn * number_times_single_memory_is_used_before_discard
 # Sign and effet of offset_cumul_number_single_memories_used:
@@ -583,7 +587,7 @@ distance_between_checkpoints = 10
 road_width = 40  ## a little bit of margin, could be closer to 24 probably ? Don't take risk there are curvy roads
 max_allowable_distance_to_checkpoint = np.sqrt((distance_between_checkpoints / 2) ** 2 + (road_width / 2) ** 2)
 
-zone_centers_jitter = 0  # TODO : eval with zero jitter on zone centers !!
+zone_centers_jitter = 2  # TODO : eval with zero jitter on zone centers !!
 good_time_save_all_ms = 0
 
 timeout_during_run_ms = 2_100

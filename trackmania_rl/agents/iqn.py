@@ -40,6 +40,8 @@ class Agent(torch.nn.Module):
             torch.nn.LeakyReLU(inplace=True),
             torch.nn.Linear(float_hidden_dim, float_hidden_dim),
             torch.nn.LeakyReLU(inplace=True),
+            torch.nn.Linear(float_hidden_dim, float_hidden_dim),
+            torch.nn.LeakyReLU(inplace=True),
         )
 
         dense_input_dimension = conv_head_output_dim + float_hidden_dim
@@ -47,10 +49,14 @@ class Agent(torch.nn.Module):
         self.A_head = torch.nn.Sequential(
             torch.nn.Linear(dense_input_dimension, dense_hidden_dimension // 2),
             torch.nn.LeakyReLU(inplace=True),
+            torch.nn.Linear( dense_hidden_dimension // 2, dense_hidden_dimension // 2),
+            torch.nn.LeakyReLU(inplace=True),
             torch.nn.Linear(dense_hidden_dimension // 2, n_actions),
         )
         self.V_head = torch.nn.Sequential(
             torch.nn.Linear(dense_input_dimension, dense_hidden_dimension // 2),
+            torch.nn.LeakyReLU(inplace=True),
+            torch.nn.Linear( dense_hidden_dimension // 2, dense_hidden_dimension // 2),
             torch.nn.LeakyReLU(inplace=True),
             torch.nn.Linear(dense_hidden_dimension // 2, 1),
         )
@@ -231,7 +237,7 @@ class Trainer:
         self.tau_greedy_boltzmann = tau_greedy_boltzmann
         self.execution_stream = torch.cuda.Stream()
 
-    def train_on_batch(self, pinned_buffer :buffer_management.Pinned_buffer_async, buffer: ReplayBuffer, do_learn: bool):
+    def train_on_batch(self, buffer: ReplayBuffer, do_learn: bool):
         self.optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast(device_type="cuda", dtype=torch.float16):

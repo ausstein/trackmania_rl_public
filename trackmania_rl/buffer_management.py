@@ -4,7 +4,7 @@ import numpy as np
 
 from . import misc
 from .experience_replay.basic_experience_replay import ReplayBuffer
-from .experience_replay.experience_replay_interface import Experience_async, Experience
+from .experience_replay.experience_replay_interface import Experience
 import torch.multiprocessing as mp
 import torch
 import time
@@ -373,7 +373,7 @@ def fill_buffer_from_rollout_with_n_steps_rule_async(
             next_state_float = state_float
         with buffer_Lock:
             buffer_pipe_to_fill.put(
-                Experience_async(
+                Experience(
                     state_img,
                     state_float,
                     action,

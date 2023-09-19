@@ -26,7 +26,7 @@ def buffer_collate_function(batch, sampling_stream):
     with torch.cuda.stream(sampling_stream):
         batch = tuple(
             map(
-                lambda attr_name: fast_collate2(batch, attr_name),
+                lambda attr_name: fast_collate(batch, attr_name),
                 [
                     "state_img",
                     "state_float",

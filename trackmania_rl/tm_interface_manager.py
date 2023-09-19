@@ -127,14 +127,12 @@ class TMInterfaceManager:
     def __init__(
         self,
         base_dir,
-        pinned_buffer_Queue,
         running_speed=1,
         run_steps_per_action=10,
         max_overall_duration_ms=2000,
         max_minirace_duration_ms=2000,
         interface_name="TMInterface0",
         zone_centers=None,
-        pinned_buffer_Lock=None,
         
     ):
         # Create TMInterface we will be using to interact with the game client
@@ -153,12 +151,6 @@ class TMInterfaceManager:
         #remove_fps_cap()
         self.zone_centers = zone_centers
         self.msgtype_response_to_wakeup_TMI = None
-        self.pinned_buffer_size = (
-            misc.memory_size_per_session + 10000
-        )  # We need some margin so we don't invalidate de the next ~n_step transitions when we overwrite images
-        self.pinned_buffer_Queue = pinned_buffer_Queue
-        self.pinned_buffer_index = 0
-        self.pinned_buffer_Lock =pinned_buffer_Lock
         self.trackmania_window=None
 
     def rewind_to_state(self, state):
@@ -502,14 +494,14 @@ class TMInterfaceManager:
                         )
                         #if (self.pinned_buffer_Lock!=None):
                         #print(self.interface_name , "before pushing frame to pinned buffer", flush=True)
-                        with self.pinned_buffer_Lock:
-                            self.pinned_buffer_Queue.put([self.pinned_buffer_index+misc.memory_size_per_session*(int(self.interface_name[-1])-misc.lowest_tm_interface),frame])
+                        #with self.pinned_buffer_Lock:
+                        #    self.pinned_buffer_Queue.put([self.pinned_buffer_index+misc.memory_size_per_session*(int(self.interface_name[-1])-misc.lowest_tm_interface),frame])
                         #frame = self.pinned_buffer[self.pinned_buffer_index]
                         #
-                        rollout_results["frames"].append(self.pinned_buffer_index+misc.memory_size_per_session*(int(self.interface_name[-1])-misc.lowest_tm_interface))
-                        self.pinned_buffer_index += 1
-                        if self.pinned_buffer_index >= self.pinned_buffer_size:
-                            self.pinned_buffer_index = 0
+                        rollout_results["frames"].append(frame)
+                        #self.pinned_buffer_index += 1
+                        #if self.pinned_buffer_index >= self.pinned_buffer_size:
+                        #    self.pinned_buffer_index = 0
 
                         #print(self.interface_name , "before constructing features", flush=True)
 

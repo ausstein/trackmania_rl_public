@@ -128,7 +128,7 @@ class ReplayBuffer_async:
         self,
         *,
         capacity: int,
-        pinned_memory,
+        #pinned_memory,
         collate_fn: Optional[Callable] = None,
         prefetch: Optional[int] = None,
         batch_size: Optional[int] = None,
@@ -146,7 +146,7 @@ class ReplayBuffer_async:
         self._prefetch_cap = prefetch or 0
         self._prefetch_queue = deque()
         self.Recievers=[]
-        self.pinned_memory=pinned_memory
+        #self.pinned_memory=pinned_memory
         self.buffer_Lock=buffer_Lock
         self.accumulated_stats=accumulated_stats
         if batch_size is None and prefetch:
@@ -176,7 +176,7 @@ class ReplayBuffer_async:
         self.Recievers.remove(reciever)
     def CheckRecievers(self):
         #if self.buffer_Lock!=None:
-        self.pinned_memory.CheckRecievers()
+        #self.pinned_memory.CheckRecievers()
         
         for reciever in self.Recievers:
             for i in range(0,reciever.qsize()):
@@ -186,12 +186,12 @@ class ReplayBuffer_async:
                     self.add(data)
                 except:
                     pass
-        self.pinned_memory.CheckRecievers()
+        #self.pinned_memory.CheckRecievers()
 
             
     def add(self, data: Any) -> int:
-        data.state_img = self.pinned_memory.get_frames_from_buffer(data.state_img)
-        data.next_state_img = self.pinned_memory.get_frames_from_buffer(data.next_state_img)
+        #data.state_img = self.pinned_memory.get_frames_from_buffer(data.state_img)
+        #data.next_state_img = self.pinned_memory.get_frames_from_buffer(data.next_state_img)
         index = self._writer.add(data)     
         self._sampler.add(index)
         self.accumulated_stats["cumul_number_frames_played"]+=1
@@ -215,13 +215,13 @@ class ReplayBuffer_async:
 
     def _sample(self, batch_size: int) -> Tuple[Any, dict, Any]:
         self.CheckRecievers()
-        with self.buffer_Lock: 
-            index, info = self._sampler.sample(self._storage, batch_size)
-            info["index"] = index
-            data = self._storage[index]
-            if not isinstance(index, INT_CLASSES) and self._collate_fn is not None:
-                data, cuda_batch_event = self._collate_fn(data, self.sampling_stream)
-            return data, info, cuda_batch_event
+        #with self.buffer_Lock: 
+        index, info = self._sampler.sample(self._storage, batch_size)
+        info["index"] = index
+        data = self._storage[index]
+        if not isinstance(index, INT_CLASSES) and self._collate_fn is not None:
+            data, cuda_batch_event = self._collate_fn(data, self.sampling_stream)
+        return data, info, cuda_batch_event
 
     def sample(self, batch_size: Optional[int] = None, return_info: bool = False) -> Any:
         if batch_size is not None and self._batch_size is not None and batch_size != self._batch_size:

@@ -23,7 +23,7 @@ import win32gui
 #from trackmania_rl.experience_replay.basic_experience_replay import ReplayBuffer
 base_dir = Path(__file__).resolve().parents[1]
 
-run_name = "TEST5"
+run_name = "TEST12"
 map_name = "map5"
 def start_TMI():
     workdir="C:\Program Files (x86)\Steam\steamapps\common\TrackMania Nations Forever"
@@ -46,7 +46,7 @@ def remove_fps_cap():
         process.close()
         print(f"Disabled FPS cap of process {pid}")
         
-def CollectData(accumulated_stats,interface_name,base_dir,pinned_buffer_Queue,zone_centers,buffer_test_Queue,buffer_Queue,tensorBoard_Queue, save_dir,pinned_buffer_Lock,buffer_Lock,tensorBoard_Lock):
+def CollectData(accumulated_stats,interface_name,base_dir,zone_centers,buffer_test_Queue,buffer_Queue,tensorBoard_Queue, save_dir,buffer_Lock,tensorBoard_Lock):
     from trackmania_rl import tm_interface_manager
     if misc.write_worker_prints_to_file:
         PrintOutput = open(save_dir/(interface_name+'.txt'), 'a')
@@ -74,14 +74,12 @@ def CollectData(accumulated_stats,interface_name,base_dir,pinned_buffer_Queue,zo
     )
     tmi = tm_interface_manager.TMInterfaceManager(
         base_dir=base_dir,
-        pinned_buffer_Queue=pinned_buffer_Queue,
         running_speed=misc.running_speed,
         run_steps_per_action=misc.tm_engine_step_per_action,
         max_overall_duration_ms=misc.cutoff_rollout_if_race_not_finished_within_duration_ms,
         max_minirace_duration_ms=misc.cutoff_rollout_if_no_vcp_passed_within_duration_ms,
         interface_name=interface_name,
         zone_centers=zone_centers,
-        pinned_buffer_Lock=pinned_buffer_Lock
         
     )
     
@@ -130,22 +128,21 @@ def CollectData(accumulated_stats,interface_name,base_dir,pinned_buffer_Queue,zo
             trainer.epsilon = 0
             trainer.epsilon_boltzmann = 0
             print("EVAL EVAL EVAL EVAL EVAL EVAL EVAL EVAL EVAL EVAL")
-    
+        #print("Before Race Start", flush=True)
         rollout_results, end_race_stats, sucess = tmi.rollout(
             exploration_policy=trainer.get_exploration_action,
             is_eval=not is_explo,
         )
+        #print("RACE DONE, SUCESS=", sucess, flush=True)
         if not sucess:
             tmi = tm_interface_manager.TMInterfaceManager(
                 base_dir=base_dir,
-                pinned_buffer_Queue=pinned_buffer_Queue,
                 running_speed=misc.running_speed,
                 run_steps_per_action=misc.tm_engine_step_per_action,
                 max_overall_duration_ms=misc.cutoff_rollout_if_race_not_finished_within_duration_ms,
                 max_minirace_duration_ms=misc.cutoff_rollout_if_no_vcp_passed_within_duration_ms,
                 interface_name=interface_name,
                 zone_centers=zone_centers,
-                pinned_buffer_Lock=pinned_buffer_Lock
                 
             )
             continue
@@ -278,6 +275,7 @@ def CollectData(accumulated_stats,interface_name,base_dir,pinned_buffer_Queue,zo
             )
     
         accumulated_stats["cumul_number_memories_generated"] += number_memories_added
+        importlib.reload(misc)
         #accumulated_stats["cumul_number_single_memories_should_have_been_used"] += (
         #    misc.number_times_single_memory_is_used_before_discard * number_memories_added
         #)
@@ -417,7 +415,7 @@ if __name__ == '__main__':
     ).to("cuda", memory_format=torch.channels_last)
     print(model1)
 
-    optimizer1 = torch.optim.RAdam(model1.parameters(), lr=misc.learning_rate, eps=1e-4)
+    optimizer1 = torch.optim.RAdam(model1.parameters(), lr=misc.learning_rate, eps=1e-6)
     # optimizer1 = torch.optim.Adam(model1.parameters(), lr=misc.learning_rate, eps=0.01)
     # optimizer1 = torch.optim.SGD(model1.parameters(), lr=misc.learning_rate, momentum=0.8)
     scaler = torch.cuda.amp.GradScaler()
@@ -477,49 +475,49 @@ if __name__ == '__main__':
     # ========================================================
     model1.train()
     time_last_save = time.time()
-    pinned_buffer_Lock=mp.Lock()
+    #pinned_buffer_Lock=mp.Lock()
     
 
-    pinned_buffer_size=(misc.memory_size_per_session + 10000) *misc.num_sessions
+    #pinned_buffer_size=(misc.memory_size_per_session + 10000) *misc.num_sessions
     #pinned_buffer = torch.empty((pinned_buffer_size, 1, misc.H_downsized, misc.W_downsized), dtype=torch.uint8)
     #torch.cuda.cudart().cudaHostRegister(
     #pinned_buffer.data_ptr(), pinned_buffer_size * misc.H_downsized * misc.W_downsized, 0
     #)
-    pinned_buffer=buffer_management.Pinned_buffer_async(pinned_buffer_size,pinned_buffer_Lock)
+    #pinned_buffer=buffer_management.Pinned_buffer_async(pinned_buffer_size,pinned_buffer_Lock)
 
-    pinned_buffer_Queue = mp.Queue()
-    pinned_buffer.addReciever(pinned_buffer_Queue)
+    #pinned_buffer_Queue = mp.Queue()
+    #pinned_buffer.addReciever(pinned_buffer_Queue)
     
     tensorBoard_Queue=mp.Queue()
     tensorBoard_Lock=mp.Lock()
     
     remove_fps_cap()
-    
-    Buffers=[]
-    Buffers_test=[]
-    BufferLocks=[]
-    BufferQueues=[]
-    BufferQueues_test=[]
+    buffer_Lock=mp.Lock()
+    buffer = ReplayBuffer_async(capacity=int(misc.memory_size/misc.num_sessions* (1-misc.buffer_test_ratio)), batch_size=misc.batch_size, collate_fn=buffer_collate_function,buffer_Lock=buffer_Lock,accumulated_stats=accumulated_stats)
+    buffer_test = ReplayBuffer_async(
+        capacity=int(misc.memory_size/misc.num_sessions * misc.buffer_test_ratio), batch_size=misc.batch_size, collate_fn=buffer_collate_function,buffer_Lock=buffer_Lock
+    )  
+    buffer_Queue = mp.Queue()
+    buffer_test_Queue = mp.Queue()
+
+    buffer.addReciever(buffer_Queue)
+    buffer_test.addReciever(buffer_test_Queue)
+    #Buffers=[]
+    #Buffers_test=[]
+    #BufferLocks=[]
+    #BufferQueues=[]
+    #BufferQueues_test=[]
     processes= []
     for i in range(misc.lowest_tm_interface,misc.lowest_tm_interface+misc.num_sessions):
-        buffer_Lock=mp.Lock()
-        buffer = ReplayBuffer_async(capacity=int(misc.memory_size/misc.num_sessions* (1-misc.buffer_test_ratio)),pinned_memory=pinned_buffer, batch_size=misc.batch_size, collate_fn=buffer_collate_function,buffer_Lock=buffer_Lock,accumulated_stats=accumulated_stats)
-        buffer_test = ReplayBuffer_async(
-            capacity=int(misc.memory_size/misc.num_sessions * misc.buffer_test_ratio),pinned_memory=pinned_buffer, batch_size=misc.batch_size, collate_fn=buffer_collate_function,buffer_Lock=buffer_Lock
-        )  
-        buffer_Queue = mp.Queue()
-        buffer_test_Queue = mp.Queue()
 
-        buffer.addReciever(buffer_Queue)
-        buffer_test.addReciever(buffer_test_Queue)
         
-        Buffers.append(buffer)
-        Buffers_test.append(buffer_test)
-        BufferLocks.append(buffer_Lock)
-        BufferQueues.append(buffer_Queue)
-        BufferQueues_test.append(buffer_test_Queue)
+        #Buffers.append(buffer)
+        #Buffers_test.append(buffer_test)
+        #BufferLocks.append(buffer_Lock)
+        #BufferQueues.append(buffer_Queue)
+        #BufferQueues_test.append(buffer_test_Queue)
         
-        p=mp.Process(target=CollectData,args=(accumulated_stats,"TMInterface"+str(i),base_dir,pinned_buffer_Queue,zone_centers,buffer_test_Queue,buffer_Queue,tensorBoard_Queue,save_dir,pinned_buffer_Lock,buffer_Lock,tensorBoard_Lock))   
+        p=mp.Process(target=CollectData,args=(accumulated_stats,"TMInterface"+str(i),base_dir,zone_centers,buffer_test_Queue,buffer_Queue,tensorBoard_Queue,save_dir,buffer_Lock,tensorBoard_Lock))   
         p.start()        # ===============================================
         processes.append(p)
         #p2=mp.Process(target=CollectData,args=(accumulated_stats,"TMInterface1",base_dir,pinned_buffer_Queue,zone_centers,buffer_test_Queue,buffer_Queue,save_dir))   
@@ -547,29 +545,29 @@ if __name__ == '__main__':
             except:
                 pass
         #for i in range(0,1000):
-        pinned_buffer.CheckRecievers()
-        for buffer in Buffers:
-            buffer.CheckRecievers()
-            print("this buffer has" , len(buffer), "items")
-        for buffer_test in Buffers_test:
-            buffer_test.CheckRecievers()
+        #pinned_buffer.CheckRecievers()
+        #for buffer in Buffers:
+        buffer.CheckRecievers()
+        print("the buffer has" , len(buffer), "items")
+        #for buffer_test in Buffers_test:
+        buffer_test.CheckRecievers()
         
         
         for i in range(0,misc.batches_per_training):
-            buffer = random.choice(Buffers)
-            buffer_test = random.choice(Buffers_test)
+            #buffer = random.choice(Buffers)
+            #buffer_test = random.choice(Buffers_test)
             if (
                 
-                len(buffer) >= misc.memory_size_start_learn/misc.num_sessions
+                len(buffer) >= misc.memory_size_start_learn
                 
             ):
                 if (random.random() < misc.buffer_test_ratio and len(buffer_test) > 0) or len(buffer) == 0:
-                    loss = trainer.train_on_batch(pinned_buffer, buffer_test, do_learn=False)
+                    loss = trainer.train_on_batch( buffer_test, do_learn=False)
                     loss_test_history.append(loss)
                     print(f"BT   {loss=:<8.2e}")
                 else:
                     train_start_time = time.time()
-                    loss = trainer.train_on_batch(pinned_buffer, buffer, do_learn=True)
+                    loss = trainer.train_on_batch( buffer, do_learn=True)
                     accumulated_stats["cumul_number_single_memories_used"] += misc.batch_size
                     train_on_batch_duration_history.append(time.time() - train_start_time)
                     loss_history.append(loss)
@@ -592,7 +590,7 @@ if __name__ == '__main__':
                         print("UPDATE")
                         nn_utilities.soft_copy_param(model2, model1, misc.soft_update_tau)
                         # model2.load_state_dict(model.state_dict())
-        buffer.sync_prefetching()  # Finish all prefetching to avoid invalid prefetches during rollouts where the pinned image buffer will be overwritten
+        #buffer.sync_prefetching()  # Finish all prefetching to avoid invalid prefetches during rollouts where the pinned image buffer will be overwritten
         print("")
     
         # ===============================================
@@ -765,10 +763,10 @@ if __name__ == '__main__':
             #if accumulated_stats["cumul_number_frames_played"] > 300_000:
             #    misc.reward_per_ms_press_forward = 0
             #    misc.discard_non_greedy_actions_in_nsteps=True
-            #if accumulated_stats["cumul_number_frames_played"] < 250_000:
-            #    misc.learning_rate *= 5
-            #elif accumulated_stats["cumul_number_frames_played"] <500_000:
-            #    misc.learning_rate *= 5 * (1-(accumulated_stats["cumul_number_frames_played"] - 500_000 + 250_000 )/250_000)
+            if accumulated_stats["cumul_number_frames_played"] < 250_000:
+                misc.learning_rate *= 5
+            elif accumulated_stats["cumul_number_frames_played"] <500_000:
+                misc.learning_rate *= 5 * (1-(accumulated_stats["cumul_number_frames_played"] - 500_000 + 250_000 )/250_000)
     
             # ===============================================
             #   RELOAD
